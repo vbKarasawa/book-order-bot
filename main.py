@@ -4,11 +4,15 @@ import gspread
 import requests
 import os
 import json
+import logging
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 from isbnlib import to_isbn10, to_isbn13, canonical, is_isbn10, is_isbn13
 from flask import Flask
 import threading
+
+# ログ設定
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Flask app for health check
 app = Flask(__name__)
@@ -93,10 +97,10 @@ def is_valid_isbn(isbn):
             
             # 最終チェック
             if is_isbn13(isbn13):
-                print(f"978変換で有効なISBN-13に変換: {isbn13}")
+                logging.info(f"978変換で有効なISBN-13に変換: {isbn13}")
                 return True
         except Exception as e:
-            print(f"ISBN変換エラー: {e}")
+            logging.error(f"ISBN変換エラー: {e}")
     
     return False
 
@@ -124,7 +128,7 @@ def safe_isbn_conversion(isbn):
         elif len(clean_isbn) == 10:
             result["isbn_10"] = clean_isbn
     except Exception as e:
-        print(f"ISBN-10変換エラー: {e}")
+        logging.error(f"ISBN-10変換エラー: {e}")
         pass
     
     # ISBN-13への変換を試みる
@@ -134,7 +138,7 @@ def safe_isbn_conversion(isbn):
         elif len(clean_isbn) == 13:
             result["isbn_13"] = clean_isbn
     except Exception as e:
-        print(f"ISBN-13変換エラー: {e}")
+        logging.error(f"ISBN-13変換エラー: {e}")
         pass
     
     return result
@@ -142,7 +146,7 @@ def safe_isbn_conversion(isbn):
 # Google Books APIを使ってISBNから書籍情報を取得する関数
 def get_book_info(isbn):
     if not API_KEY:
-        print("Google Books API key not found")
+        logging.warning("Google Books API key not found")
         return None
         
     params = {
@@ -214,7 +218,7 @@ def get_book_info(isbn):
 # Botが起動した際の処理
 @client_discord.event
 async def on_ready():
-    print(f'Logged in as {client_discord.user}')
+    logging.info(f'Logged in as {client_discord.user}')
 
 # メッセージを受け取ったときの処理
 @client_discord.event
@@ -228,7 +232,7 @@ async def on_message(message):
         # 取得したISBNからハイフンとスペースを削除
         isbn_with_separators = match.group(0)
         isbn = re.sub(r'[\s-]', '', isbn_with_separators)
-        print(f"ISBN Found: {isbn} (元の形式: {isbn_with_separators})")
+        logging.info(f"ISBN Found: {isbn} (元の形式: {isbn_with_separators})")
 
         # ISBNの有効性を確認
         if not is_valid_isbn(isbn):
@@ -244,7 +248,7 @@ async def on_message(message):
             await message.reply("ISBN変換に失敗しました。正確なISBNを入力してください。")
             return
             
-        print(f"ISBN-10: {isbn_10}, ISBN-13: {isbn_13}")
+        logging.info(f"ISBN-10: {isbn_10}, ISBN-13: {isbn_13}")
         
         try:
             # OpenBD APIを使って書籍情報を取得

@@ -281,7 +281,7 @@ async def on_message(message):
                 # スプレッドシートへの情報書き込み
                 new_row = [str(current_date), str(isbn_10), str(isbn_13), title, str(price), publisher, 2, '注文待ち', str(message.author.id), str(hanmoto_url)]
                 sheet.append_row(new_row)
-                print(f"Data added to Google Sheet: {new_row}")
+                logging.info(f"Data added to Google Sheet: {new_row}")
 
                 # 書籍情報が取得できた場合にメッセージを引用して返信
                 reply_message = f"ありがとうございます！\n『{title}』を2冊発注依頼しました！\n{hanmoto_url}"
@@ -291,13 +291,13 @@ async def on_message(message):
                 # スプレッドシートへの情報書き込み
                 new_row = [str(current_date), str(isbn_10), str(isbn_13), "", "", "", 2, '注文待ち', str(message.author.id), str(hanmoto_url)]
                 sheet.append_row(new_row)
-                print(f"Data added to Google Sheet: {new_row}")
+                logging.info(f"Data added to Google Sheet: {new_row}")
                 # 書籍情報が取得できなかった場合にメッセージを引用して返信
                 error_message = f"ありがとうございます！\n注文された書籍を２冊発注依頼しました！（まだ知識が浅くて、書籍タイトルを持ってこれませんでした。ごめんなさい！）\nこちらの本を発注しています！\n{hanmoto_url}"
                 await message.reply(error_message)
                 
         except Exception as e:
-            print(f"Error processing ISBN: {e}")
+            logging.error(f"Error processing ISBN: {e}")
             await message.reply("申し訳ありません。処理中にエラーが発生しました。しばらく時間をおいて再度お試しください。")
 
 if __name__ == "__main__":

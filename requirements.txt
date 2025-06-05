@@ -1,0 +1,6 @@
+discord.py==2.3.2
+gspread==5.12.4
+oauth2client==4.1.3
+requests==2.31.0
+isbnlib==3.10.14
+flask==3.0.0

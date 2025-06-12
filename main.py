@@ -5,6 +5,7 @@ import requests
 import os
 import json
 import logging
+import asyncio
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 from isbnlib import to_isbn10, to_isbn13, canonical, is_isbn10, is_isbn13
@@ -56,10 +57,30 @@ ISBN_PATTERN = r"\b(?:(?:[\d][\d\s-]*){9}[\dXx]|(?:[\d][\d\s-]*){12}\d)\b"
 # Google Books APIの設定
 GOOGLE_BOOKS_API_URL = "https://www.googleapis.com/books/v1/volumes"
 
-# Discordクライアント設定
-intents = discord.Intents.default()
-intents.message_content = True
-client_discord = discord.Client(intents=intents)
+# Rate Limit対応の安全な返信機能
+async def safe_reply(message, content, max_retries=3):
+    """
+    Rate Limitに対応した安全な返信機能
+    """
+    for attempt in range(max_retries):
+        try:
+            await message.reply(content)
+            logging.info(f"Message sent successfully on attempt {attempt + 1}")
+            return True
+        except discord.errors.HTTPException as e:
+            if e.status == 429:  # Rate Limited
+                wait_time = 2 ** attempt  # エクスポネンシャルバックオフ (2, 4, 8秒)
+                logging.warning(f"Rate limited. Waiting {wait_time} seconds before retry {attempt + 1}/{max_retries}")
+                await asyncio.sleep(wait_time)
+            else:
+                logging.error(f"HTTP Exception: {e}")
+                return False
+        except Exception as e:
+            logging.error(f"Unexpected error in safe_reply: {e}")
+            return False
+    
+    logging.error(f"Failed to send message after {max_retries} attempts")
+    return False
 
 # ISBNが有効かどうかをチェックする関数
 def is_valid_isbn(isbn):
@@ -236,7 +257,7 @@ async def on_message(message):
 
         # ISBNの有効性を確認
         if not is_valid_isbn(isbn):
-            await message.reply("申し訳ありません。有効なISBN形式ではないようです。正しいISBNを入力してください。")
+            await safe_reply(message, "申し訳ありません。有効なISBN形式ではないようです。正しいISBNを入力してください。")
             return
 
         # ISBNをISBN-10とISBN-13に変換
@@ -245,7 +266,7 @@ async def on_message(message):
         isbn_13 = isbn_data["isbn_13"]
         
         if not isbn_10 and not isbn_13:
-            await message.reply("ISBN変換に失敗しました。正確なISBNを入力してください。")
+            await safe_reply(message, "ISBN変換に失敗しました。正確なISBNを入力してください。")
             return
             
         logging.info(f"ISBN-10: {isbn_10}, ISBN-13: {isbn_13}")
@@ -285,7 +306,7 @@ async def on_message(message):
 
                 # 書籍情報が取得できた場合にメッセージを引用して返信
                 reply_message = f"ありがとうございます！\n『{title}』を2冊発注依頼しました！\n{hanmoto_url}"
-                await message.reply(reply_message)
+                await safe_reply(message, reply_message)
 
             else:
                 # スプレッドシートへの情報書き込み
@@ -294,11 +315,12 @@ async def on_message(message):
                 logging.info(f"Data added to Google Sheet: {new_row}")
                 # 書籍情報が取得できなかった場合にメッセージを引用して返信
                 error_message = f"ありがとうございます！\n注文された書籍を２冊発注依頼しました！（まだ知識が浅くて、書籍タイトルを持ってこれませんでした。ごめんなさい！）\nこちらの本を発注しています！\n{hanmoto_url}"
-                await message.reply(error_message)
+                await safe_reply(message, error_message)
                 
         except Exception as e:
             logging.error(f"Error processing ISBN: {e}")
-            await message.reply("申し訳ありません。処理中にエラーが発生しました。しばらく時間をおいて再度お試しください。")
+            # エラー時も安全な返信を使用
+            await safe_reply(message, "申し訳ありません。処理中にエラーが発生しました。しばらく時間をおいて再度お試しください。")
 
 if __name__ == "__main__":
     # Webサーバーとbotを並行実行

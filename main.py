@@ -57,6 +57,11 @@ ISBN_PATTERN = r"\b(?:(?:[\d][\d\s-]*){9}[\dXx]|(?:[\d][\d\s-]*){12}\d)\b"
 # Google Books APIの設定
 GOOGLE_BOOKS_API_URL = "https://www.googleapis.com/books/v1/volumes"
 
+# Discordクライアント設定
+intents = discord.Intents.default()
+intents.message_content = True
+client_discord = discord.Client(intents=intents)
+
 # Rate Limit対応の安全な返信機能
 async def safe_reply(message, content, max_retries=3):
     """

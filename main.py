@@ -396,7 +396,28 @@ async def on_message(message):
             # エラー時も安全な返信を使用
             await safe_reply(message, "申し訳ありません。処理中にエラーが発生しました。しばらく時間をおいて再度お試しください。")
 
+def sys_close():
+    """Rate Limit対策でシステムを終了"""
+    print("Rate Limit対策でシステムを終了します")
+    logging.info("Shutting down due to rate limit")
+    os.system("kill 1")
+
+def log_write(log_text):
+    """エラーログを保存"""
+    sleep_time = 12
+    try:
+        with open('error.log', 'a', encoding='utf-8') as f:
+            f.write(log_text)
+        print(f"ログ保存完了。{sleep_time}秒待機中...")
+        logging.info(f"Error log saved. Waiting {sleep_time} seconds...")
+        time.sleep(sleep_time)
+    except Exception as e:
+        logging.error(f"Log write error: {e}")
+
 if __name__ == "__main__":
+    # タイムゾーン設定
+    tz_jst = datetime.timezone(datetime.timedelta(hours=9))
+    
     # Webサーバーを別スレッドで起動
     web_thread = threading.Thread(target=run_web, daemon=True)
     web_thread.start()
@@ -404,11 +425,39 @@ if __name__ == "__main__":
     # 少し待ってからDiscord Botを起動
     time.sleep(2)
     
-    # Discord Bot起動
+    # Discord Bot起動（Rate Limit対策付き）
     try:
         client_discord.run(TOKEN)
+        
+        # 接続がクローズされた場合の対策
+        if client_discord.is_closed():
+            logging.warning("Discord client connection closed")
+            sys_close()
+            
+    except discord.DiscordException as e:
+        error_time = datetime.now(tz_jst).strftime("%Y-%m-%d %H:%M:%S")
+        error_text = f"Discord エラー発生: {error_time}\n{str(e)}\n\n"
+        
+        print(f"\n{error_text}")
+        logging.error(error_text)
+        
+        # Rate Limitエラーの場合は特別処理
+        if "429" in str(e) or "Too Many Requests" in str(e):
+            error_text += "Rate Limit対策を実行します\n\n"
+            print("Rate Limitエラーを検出しました")
+        
+        # エラーログを保存
+        log_write(error_text)
+        
+        # Rate Limit対策でシステム終了
+        sys_close()
+        
     except KeyboardInterrupt:
         logging.info("Bot shutdown requested")
     except Exception as e:
-        logging.error(f"Bot error: {e}")
-        raise
+        error_time = datetime.now(tz_jst).strftime("%Y-%m-%d %H:%M:%S")
+        error_text = f"予期しないエラー発生: {error_time}\n{str(e)}\n\n"
+        
+        logging.error(error_text)
+        log_write(error_text)
+        sys_close()

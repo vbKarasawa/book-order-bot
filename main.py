@@ -95,7 +95,9 @@ creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
 
 # スプレッドシートのIDを環境変数から取得
-SHEET_ID = os.environ.get('GOOGLE_SHEET_ID', '1cZ9BGx2etjDQEHi_izTfbYHuzkLJLHx8UDucZMsbp6s')
+SHEET_ID = os.environ.get('GOOGLE_SHEET_ID')
+if not SHEET_ID:
+    raise ValueError("GOOGLE_SHEET_ID environment variable is not set")
 sheet = client.open_by_key(SHEET_ID).sheet1
 
 # 改良されたISBNの正規表現パターン - スペースやハイフンを含むISBN-10/13を検出

@@ -7,7 +7,7 @@ import json
 import logging
 import asyncio
 from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime
+from datetime import datetime, timezone, timedelta  # timezoneとtimedeltatも追加
 from isbnlib import to_isbn10, to_isbn13, canonical, is_isbn10, is_isbn13
 from flask import Flask, request
 import threading
@@ -417,8 +417,8 @@ def log_write(log_text):
         logging.error(f"Log write error: {e}")
 
 if __name__ == "__main__":
-    # タイムゾーン設定
-    tz_jst = datetime.timezone(datetime.timedelta(hours=9))
+    # タイムゾーン設定（修正版）
+    tz_jst = timezone(timedelta(hours=9))
     
     # Webサーバーを別スレッドで起動
     web_thread = threading.Thread(target=run_web, daemon=True)

@@ -34,8 +34,11 @@ health_status = {
     'bot_connected': False,
     'connection_attempts': 0,
     'last_error': None,
-    'startup_attempts': 0,  # 新規追加：起動試行回数
-    'first_startup_time': datetime.now().isoformat()  # 新規追加：初回起動時刻
+    'startup_attempts': 0,  # 起動試行回数
+    'first_startup_time': datetime.now().isoformat(),  # 初回起動時刻
+    'message_success_rate': 0.0,  # 新規追加：返信成功率
+    'total_messages': 0,  # 新規追加：総メッセージ数
+    'successful_messages': 0  # 新規追加：成功メッセージ数
 }
 
 # 起動制限の設定
@@ -68,8 +71,11 @@ def status():
         'timestamp': datetime.now().isoformat(),
         'bot_status': health_status['bot_connected'],
         'connection_attempts': health_status['connection_attempts'],
-        'startup_attempts': health_status['startup_attempts'],  # 新規追加
-        'max_startup_attempts': MAX_STARTUP_ATTEMPTS  # 新規追加
+        'startup_attempts': health_status['startup_attempts'],
+        'max_startup_attempts': MAX_STARTUP_ATTEMPTS,
+        'message_success_rate': f"{health_status['message_success_rate']:.1%}",
+        'total_messages': health_status['total_messages'],
+        'successful_messages': health_status['successful_messages']
     }
 
 @app.route('/robots.txt')
@@ -182,8 +188,8 @@ def save_startup_data(attempts):
 # Rate Limit対応の改善された接続関数
 async def safe_connect_with_backoff():
     """指数関数的バックオフを使った安全な接続"""
-    max_retries = 4      # 4回まで試行（変更済み）
-    base_delay = 120     # 2分の基本待機時間（変更済み）
+    max_retries = 4      # 4回まで試行
+    base_delay = 120     # 2分の基本待機時間
     
     for attempt in range(max_retries):
         try:
@@ -215,18 +221,38 @@ async def safe_connect_with_backoff():
     logger.error(f"Failed to connect after {max_retries} attempts")
     return False
 
-# Rate Limit対応の安全な返信機能
-async def safe_reply(message, content, max_retries=3):
+# Rate Limit対応の安全な返信機能（強化版）
+async def safe_reply(message, content, max_retries=5):
+    """Rate Limitに対応した安全な返信機能 - 強化版"""
+    base_delay = 5  # より長い基本待機時間
+    
+    # メッセージ統計更新
+    health_status['total_messages'] += 1
+    
     for attempt in range(max_retries):
         try:
             await message.reply(content)
             logger.info(f"Message sent successfully on attempt {attempt + 1}")
+            
+            # 成功統計更新
+            health_status['successful_messages'] += 1
+            if health_status['total_messages'] > 0:
+                health_status['message_success_rate'] = health_status['successful_messages'] / health_status['total_messages']
+            
             return True
+            
         except discord.errors.HTTPException as e:
             if e.status == 429:
-                retry_after = getattr(e, 'retry_after', 2 ** attempt)
-                logger.warning(f"Rate limited. Waiting {retry_after} seconds before retry {attempt + 1}/{max_retries}")
-                await asyncio.sleep(retry_after)
+                # Discord APIが指定した待機時間を優先、無い場合は指数関数的バックオフ
+                retry_after = getattr(e, 'retry_after', None)
+                if retry_after:
+                    wait_time = retry_after + random.uniform(1, 3)  # 少しランダム要素追加
+                    logger.warning(f"Rate limited (Discord specified). Waiting {wait_time:.1f} seconds before retry {attempt + 1}/{max_retries}")
+                else:
+                    wait_time = base_delay * (2 ** attempt) + random.uniform(0, 2)
+                    logger.warning(f"Rate limited (exponential backoff). Waiting {wait_time:.1f} seconds before retry {attempt + 1}/{max_retries}")
+                
+                await asyncio.sleep(wait_time)
             else:
                 logger.error(f"HTTP Exception: {e}")
                 return False
@@ -235,6 +261,11 @@ async def safe_reply(message, content, max_retries=3):
             return False
     
     logger.error(f"Failed to send message after {max_retries} attempts")
+    
+    # 失敗統計の更新（成功率の再計算）
+    if health_status['total_messages'] > 0:
+        health_status['message_success_rate'] = health_status['successful_messages'] / health_status['total_messages']
+    
     return False
 
 # ISBNが有効かどうかをチェックする関数
@@ -401,7 +432,12 @@ async def on_message(message):
                         logger.info(f"Data added to Google Sheet: {new_row}")
 
                         reply_message = f"ありがとうございます！\n『{title}』を2冊発注依頼しました！\n{hanmoto_url}"
-                        await safe_reply(message, reply_message)
+                        success = await safe_reply(message, reply_message)
+                        
+                        if not success:
+                            # 返信に失敗した場合のログ（データは正常に保存済み）
+                            logger.warning(f"Reply failed but order processed successfully: {title}")
+                        
                     except Exception as e:
                         logger.error(f"Google Sheets write error: {e}")
                         await safe_reply(message, "書籍情報の保存に失敗しました。しばらく時間をおいて再度お試しください。")
@@ -413,7 +449,11 @@ async def on_message(message):
                         logger.info(f"Data added to Google Sheet (no book info): {new_row}")
                         
                         error_message = f"ありがとうございます！\n注文された書籍を２冊発注依頼しました！（まだ知識が浅くて、書籍タイトルを持ってこれませんでした。ごめんなさい！）\nこちらの本を発注しています！\n{hanmoto_url}"
-                        await safe_reply(message, error_message)
+                        success = await safe_reply(message, error_message)
+                        
+                        if not success:
+                            logger.warning("Reply failed but order processed successfully (no book info)")
+                        
                     except Exception as e:
                         logger.error(f"Google Sheets write error (no book info): {e}")
                         await safe_reply(message, "注文処理に失敗しました。しばらく時間をおいて再度お試しください。")
@@ -479,7 +519,7 @@ async def main():
 if __name__ == "__main__":
     try:
         # Rate Limit回避のため、すぐには接続しない
-        logger.info("Discord Bot starting with Rate Limit protection...")
+        logger.info("Discord Bot starting with Enhanced Rate Limit protection...")
         asyncio.run(main())
     except Exception as e:
         logger.error(f"Fatal error: {e}")

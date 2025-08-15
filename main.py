@@ -182,8 +182,8 @@ def save_startup_data(attempts):
 # Rate Limit対応の改善された接続関数
 async def safe_connect_with_backoff():
     """指数関数的バックオフを使った安全な接続"""
-    max_retries = 5
-    base_delay = 60  # 基本待機時間を60秒に延長
+    max_retries = 4      # 4回まで試行（変更済み）
+    base_delay = 120     # 2分の基本待機時間（変更済み）
     
     for attempt in range(max_retries):
         try:

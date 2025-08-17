@@ -72,6 +72,139 @@ def get_server_ip():
     except:
         return "Unknown"
 
+def calculate_isbn10_check_digit(isbn9):
+    """ISBN10のチェックディジットを計算"""
+    try:
+        total = 0
+        for i, digit in enumerate(isbn9):
+            if not digit.isdigit():
+                return None
+            total += int(digit) * (10 - i)
+        
+        remainder = total % 11
+        if remainder == 0:
+            return '0'
+        elif remainder == 1:
+            return 'X'
+        else:
+            return str(11 - remainder)
+    except:
+        return None
+
+def calculate_isbn13_check_digit(isbn12):
+    """ISBN13のチェックディジットを計算"""
+    try:
+        total = 0
+        for i, digit in enumerate(isbn12):
+            if not digit.isdigit():
+                return None
+            multiplier = 1 if i % 2 == 0 else 3
+            total += int(digit) * multiplier
+        
+        remainder = total % 10
+        return str((10 - remainder) % 10)
+    except:
+        return None
+
+def fix_common_isbn_errors(isbn_input):
+    """一般的なISBN入力間違いを修正"""
+    try:
+        # 数字とXのみ抽出
+        clean_isbn = re.sub(r'[^\dX]', '', isbn_input.upper())
+        
+        # ケース1: ISBN13の後ろ10桁をISBN10として間違えて入力
+        if len(clean_isbn) == 10:
+            # 通常のISBN10として検証
+            if is_isbn10(clean_isbn):
+                return clean_isbn, to_isbn13(clean_isbn)
+            
+            # ISBN13の後ろ10桁の可能性をチェック
+            # 978 + 9桁 + チェックディジット の形で13桁にしてみる
+            if clean_isbn[0].isdigit():  # Xで始まることはない
+                test_isbn13 = '978' + clean_isbn
+                if len(test_isbn13) == 13 and is_isbn13(test_isbn13):
+                    corrected_isbn10 = to_isbn10(test_isbn13)
+                    if corrected_isbn10:
+                        logger.info(f"ISBN修正: 後ろ10桁パターン {clean_isbn} -> {corrected_isbn10}")
+                        return corrected_isbn10, test_isbn13
+            
+            # 979プレフィックスも試す
+            test_isbn13_979 = '979' + clean_isbn
+            if len(test_isbn13_979) == 13 and is_isbn13(test_isbn13_979):
+                corrected_isbn10 = to_isbn10(test_isbn13_979)
+                if corrected_isbn10:
+                    logger.info(f"ISBN修正: 979後ろ10桁パターン {clean_isbn} -> {corrected_isbn10}")
+                    return corrected_isbn10, test_isbn13_979
+            
+            # チェックディジットが間違っている可能性
+            isbn9 = clean_isbn[:9]
+            correct_check = calculate_isbn10_check_digit(isbn9)
+            if correct_check and correct_check != clean_isbn[9]:
+                corrected_isbn10 = isbn9 + correct_check
+                if is_isbn10(corrected_isbn10):
+                    logger.info(f"ISBN修正: ISBN10チェックディジット {clean_isbn} -> {corrected_isbn10}")
+                    return corrected_isbn10, to_isbn13(corrected_isbn10)
+        
+        # ケース2: ISBN10の前に978を付けただけの間違ったISBN13
+        elif len(clean_isbn) == 13:
+            # 通常のISBN13として検証
+            if is_isbn13(clean_isbn):
+                return to_isbn10(clean_isbn), clean_isbn
+            
+            # 978 + ISBN10 の形になっている可能性
+            if clean_isbn.startswith('978'):
+                potential_isbn10 = clean_isbn[3:]
+                if len(potential_isbn10) == 10:
+                    # ISBN10として正しいかチェック
+                    if is_isbn10(potential_isbn10):
+                        corrected_isbn13 = to_isbn13(potential_isbn10)
+                        logger.info(f"ISBN修正: 978+ISBN10パターン {clean_isbn} -> {corrected_isbn13}")
+                        return potential_isbn10, corrected_isbn13
+                    
+                    # ISBN10のチェックディジットを再計算
+                    isbn9 = potential_isbn10[:9]
+                    correct_check = calculate_isbn10_check_digit(isbn9)
+                    if correct_check:
+                        test_isbn10 = isbn9 + correct_check
+                        if is_isbn10(test_isbn10):
+                            corrected_isbn13 = to_isbn13(test_isbn10)
+                            logger.info(f"ISBN修正: 978+ISBN10(チェックディジット修正) {clean_isbn} -> {corrected_isbn13}")
+                            return test_isbn10, corrected_isbn13
+            
+            # チェックディジットが間違っている可能性
+            isbn12 = clean_isbn[:12]
+            correct_check = calculate_isbn13_check_digit(isbn12)
+            if correct_check and correct_check != clean_isbn[12]:
+                corrected_isbn13 = isbn12 + correct_check
+                if is_isbn13(corrected_isbn13):
+                    logger.info(f"ISBN修正: ISBN13チェックディジット {clean_isbn} -> {corrected_isbn13}")
+                    return to_isbn10(corrected_isbn13), corrected_isbn13
+        
+        # ケース3: 9桁や12桁の不完全な入力
+        elif len(clean_isbn) == 9:
+            # ISBN10の最初の9桁の可能性
+            correct_check = calculate_isbn10_check_digit(clean_isbn)
+            if correct_check:
+                test_isbn10 = clean_isbn + correct_check
+                if is_isbn10(test_isbn10):
+                    logger.info(f"ISBN修正: 9桁補完 {clean_isbn} -> {test_isbn10}")
+                    return test_isbn10, to_isbn13(test_isbn10)
+        
+        elif len(clean_isbn) == 12:
+            # ISBN13の最初の12桁の可能性
+            correct_check = calculate_isbn13_check_digit(clean_isbn)
+            if correct_check:
+                test_isbn13 = clean_isbn + correct_check
+                if is_isbn13(test_isbn13):
+                    logger.info(f"ISBN修正: 12桁補完 {clean_isbn} -> {test_isbn13}")
+                    return to_isbn10(test_isbn13), test_isbn13
+        
+        return None, None
+        
+    except Exception as e:
+        logger.error(f"ISBN修正処理エラー: {e}")
+        return None, None
+
 def handle_rate_limit_error(error_message):
     """Rate Limit エラーの処理"""
     global RATE_LIMIT_DETECTED, RATE_LIMIT_START_TIME
@@ -235,23 +368,24 @@ async def on_message(message):
     if message.author == client.user:
         return
 
-    # ISBN検出の正規表現パターン
-    isbn_pattern = r'(?:ISBN[:\s-]*)?(?:978[:\s-]*)?(\d{1}[:\s-]*\d{3,5}[:\s-]*\d{1,7}[:\s-]*\d{1}[:\s-]*\d{1}|\d{1}[:\s-]*\d{3,5}[:\s-]*\d{1,7}[:\s-]*\d{1})'
+    # ISBN検出の正規表現パターン（より柔軟に）
+    isbn_pattern = r'(?:ISBN[:\s-]*)?(?:978[:\s-]*|979[:\s-]*)?(\d{1}[:\s-]*\d{3,5}[:\s-]*\d{1,7}[:\s-]*\d{1}[:\s-]*[\dX]|\d{9,13}[\dX]?)'
     
     content = message.content
-    match = re.search(isbn_pattern, content)
+    match = re.search(isbn_pattern, content, re.IGNORECASE)
     
     if match:
         isbn_raw = match.group(1)
-        isbn_digits = re.sub(r'[:\s-]', '', isbn_raw)
         
-        logger.info(f"ISBN検出: {isbn_digits}")
+        logger.info(f"ISBN候補検出: {isbn_raw}")
         
         try:
-            # ISBN形式の確認と変換
+            # まず標準的な方法で処理を試行
+            isbn_digits = re.sub(r'[:\s-]', '', isbn_raw).upper()
             isbn_10 = None
             isbn_13 = None
             
+            # 標準的な処理
             if len(isbn_digits) == 10 and is_isbn10(isbn_digits):
                 isbn_10 = isbn_digits
                 isbn_13 = to_isbn13(isbn_digits)
@@ -259,14 +393,20 @@ async def on_message(message):
                 isbn_13 = isbn_digits
                 isbn_10 = to_isbn10(isbn_digits)
             else:
-                safe_reply(message, f"無効なISBN形式です: {isbn_digits}")
-                return
+                # 標準処理で失敗した場合、修正機能を試行
+                fixed_isbn10, fixed_isbn13 = fix_common_isbn_errors(isbn_raw)
+                if fixed_isbn10 and fixed_isbn13:
+                    isbn_10 = fixed_isbn10
+                    isbn_13 = fixed_isbn13
+                else:
+                    safe_reply(message, f"無効なISBN形式です: {isbn_digits}")
+                    return
             
             # OpenBD APIから書籍情報を取得
             title, publisher, price = get_openbd_info(isbn_13 if isbn_13 else isbn_10)
             
             if title is None:
-                safe_reply(message, f"ISBN {isbn_digits} の書籍情報が見つかりませんでした。")
+                safe_reply(message, f"ISBN {isbn_13 if isbn_13 else isbn_10} の書籍情報が見つかりませんでした。")
                 return
             
             # 現在の日付を取得
@@ -280,10 +420,7 @@ async def on_message(message):
                 logger.info(f"Google Sheetにデータ追加: {new_row}")
                 
                 # 成功メッセージ
-                reply_content = f"📚 書籍情報を登録しました！\n**タイトル**: {title}\n**出版社**: {publisher}"
-                if price:
-                    reply_content += f"\n**価格**: ¥{price}"
-                reply_content += f"\n**詳細**: {hanmoto_url}"
+                reply_content = f"ありがとうございます！\n『{title}』を2冊発注依頼しました！"
                 
                 success = safe_reply(message, reply_content)
                 if not success:

@@ -362,89 +362,133 @@ async def on_ready():
     logger.info(f'{client.user} has landed!')
     health_status['bot_connected'] = True
 
-@client.event
-async def on_message(message):
-    """メッセージ受信時の処理"""
-    if message.author == client.user:
-        return
-
-    # ISBN検出の正規表現パターン（より柔軟に）
-    isbn_pattern = r'(?:ISBN[:\s-]*)?(?:978[:\s-]*|979[:\s-]*)?(\d{1}[:\s-]*\d{3,5}[:\s-]*\d{1,7}[:\s-]*\d{1}[:\s-]*[\dX]|\d{9,13}[\dX]?)'
-    
-    content = message.content
-    match = re.search(isbn_pattern, content, re.IGNORECASE)
-    
-    if match:
-        isbn_raw = match.group(1)
+def process_single_isbn(isbn_raw, message_author_id):
+    """単一ISBNの処理"""
+    try:
+        # まず標準的な方法で処理を試行
+        isbn_digits = re.sub(r'[:\s-]', '', isbn_raw).upper()
+        isbn_10 = None
+        isbn_13 = None
         
-        logger.info(f"ISBN候補検出: {isbn_raw}")
-        
-        try:
-            # まず標準的な方法で処理を試行
-            isbn_digits = re.sub(r'[:\s-]', '', isbn_raw).upper()
-            isbn_10 = None
-            isbn_13 = None
-            
-            # 標準的な処理
-            if len(isbn_digits) == 10 and is_isbn10(isbn_digits):
-                isbn_10 = isbn_digits
-                isbn_13 = to_isbn13(isbn_digits)
-            elif len(isbn_digits) == 13 and is_isbn13(isbn_digits):
-                isbn_13 = isbn_digits
-                isbn_10 = to_isbn10(isbn_digits)
+        # 標準的な処理
+        if len(isbn_digits) == 10 and is_isbn10(isbn_digits):
+            isbn_10 = isbn_digits
+            isbn_13 = to_isbn13(isbn_digits)
+        elif len(isbn_digits) == 13 and is_isbn13(isbn_digits):
+            isbn_13 = isbn_digits
+            isbn_10 = to_isbn10(isbn_digits)
+        else:
+            # 標準処理で失敗した場合、修正機能を試行
+            fixed_isbn10, fixed_isbn13 = fix_common_isbn_errors(isbn_raw)
+            if fixed_isbn10 and fixed_isbn13:
+                isbn_10 = fixed_isbn10
+                isbn_13 = fixed_isbn13
             else:
-                # 標準処理で失敗した場合、修正機能を試行
-                fixed_isbn10, fixed_isbn13 = fix_common_isbn_errors(isbn_raw)
-                if fixed_isbn10 and fixed_isbn13:
-                    isbn_10 = fixed_isbn10
-                    isbn_13 = fixed_isbn13
-                else:
-                    safe_reply(message, f"無効なISBN形式です: {isbn_digits}")
-                    return
+                return None, f"無効なISBN形式です: {isbn_digits}"
+        
+        # OpenBD APIから書籍情報を取得
+        title, publisher, price = get_openbd_info(isbn_13 if isbn_13 else isbn_10)
+        
+        if title is None:
+            return None, f"ISBN {isbn_13 if isbn_13 else isbn_10} の書籍情報が見つかりませんでした。"
+        
+        # 現在の日付を取得
+        current_date = datetime.now(timezone(timedelta(hours=9))).strftime('%Y/%m/%d')
+        hanmoto_url = get_hanmoto_url(isbn_13 if isbn_13 else isbn_10)
+        
+        # スプレッドシートへの情報書き込み
+        try:
+            new_row = [str(current_date), str(isbn_10), str(isbn_13), title, str(price), publisher, 2, '注文待ち', str(message_author_id), str(hanmoto_url)]
+            sheet.append_row(new_row)
+            logger.info(f"Google Sheetにデータ追加: {new_row}")
             
-            # OpenBD APIから書籍情報を取得
-            title, publisher, price = get_openbd_info(isbn_13 if isbn_13 else isbn_10)
+            # 成功メッセージを返す
+            return title, None
             
-            if title is None:
-                safe_reply(message, f"ISBN {isbn_13 if isbn_13 else isbn_10} の書籍情報が見つかりませんでした。")
-                return
-            
-            # 現在の日付を取得
-            current_date = datetime.now(timezone(timedelta(hours=9))).strftime('%Y/%m/%d')
-            hanmoto_url = get_hanmoto_url(isbn_13 if isbn_13 else isbn_10)
-            
-            # スプレッドシートへの情報書き込み
-            try:
-                new_row = [str(current_date), str(isbn_10), str(isbn_13), title, str(price), publisher, 2, '注文待ち', str(message.author.id), str(hanmoto_url)]
-                sheet.append_row(new_row)
-                logger.info(f"Google Sheetにデータ追加: {new_row}")
-                
-                # 成功メッセージ
-                reply_content = f"ありがとうございます！\n『{title}』を2冊発注依頼しました！"
-                
-                success = safe_reply(message, reply_content)
-                if not success:
-                    logger.warning(f"Reply failed but order processed successfully: {title}")
-                
-            except Exception as e:
-                error_str = str(e)
-                logger.error(f"Google Sheets書き込みエラー: {error_str}")
-                
-                # Rate Limitエラーの可能性をチェック
-                if handle_rate_limit_error(error_str):
-                    return
-                
-                safe_reply(message, f"書籍情報の保存でエラーが発生しました: {error_str}")
-                
         except Exception as e:
             error_str = str(e)
-            logger.error(f"ISBN処理エラー: {error_str}")
+            logger.error(f"Google Sheets書き込みエラー: {error_str}")
             
             # Rate Limitエラーの可能性をチェック
             if handle_rate_limit_error(error_str):
-                return
+                return None, "Rate Limit検出のため処理を中断しました"
             
-            safe_reply(message, f"書籍情報の処理でエラーが発生しました: {error_str}")
+            return None, f"書籍情報の保存でエラーが発生しました: {error_str}"
+            
+    except Exception as e:
+        error_str = str(e)
+        logger.error(f"ISBN処理エラー: {error_str}")
+        
+        # Rate Limitエラーの可能性をチェック
+        if handle_rate_limit_error(error_str):
+            return None, "Rate Limit検出のため処理を中断しました"
+        
+        return None, f"書籍情報の処理でエラーが発生しました: {error_str}"
+
+@client.event
+async def on_message(message):
+    """メッセージ受信時の処理"""
+    if message.author == client.user or message.author.bot:
+        return
+
+    # ISBN検出の正規表現パターン（より柔軟に、複数対応）
+    isbn_pattern = r'(?:ISBN[:\s-]*)?(?:978[:\s-]*|979[:\s-]*)?(\d{1}[:\s-]*\d{3,5}[:\s-]*\d{1,7}[:\s-]*\d{1}[:\s-]*[\dX]|\d{9,13}[\dX]?)'
+    
+    content = message.content
+    matches = re.findall(isbn_pattern, content, re.IGNORECASE)
+    
+    if matches:
+        logger.info(f"ISBN候補検出（{len(matches)}件）: {matches}")
+        
+        # 処理結果を保存するリスト
+        successful_books = []
+        error_messages = []
+        
+        # 各ISBNを個別に処理
+        for isbn_raw in matches:
+            logger.info(f"処理中: {isbn_raw}")
+            
+            # Rate Limit状態をチェック
+            global RATE_LIMIT_DETECTED, RATE_LIMIT_START_TIME
+            if RATE_LIMIT_DETECTED:
+                logger.warning("Rate Limit検出中のため、処理をスキップします")
+                break
+            
+            # 単一ISBNを処理
+            result_title, error_msg = process_single_isbn(isbn_raw, message.author.id)
+            
+            if result_title:
+                successful_books.append(result_title)
+                # 複数処理時は少し間隔を空ける
+                if len(matches) > 1:
+                    time.sleep(2)
+            elif error_msg:
+                error_messages.append(error_msg)
+                # エラーがRate Limit関連の場合は処理を中断
+                if "Rate Limit" in error_msg:
+                    break
+        
+        # 結果に応じて返信メッセージを作成
+        if successful_books:
+            if len(successful_books) == 1:
+                # 単一書籍の場合
+                reply_content = f"ありがとうございます！\n『{successful_books[0]}』を2冊発注依頼しました！"
+            else:
+                # 複数書籍の場合
+                book_list = '\n'.join([f"・『{title}』" for title in successful_books])
+                reply_content = f"ありがとうございます！\n以下の書籍を各2冊ずつ発注依頼しました！\n{book_list}"
+            
+            success = safe_reply(message, reply_content)
+            if not success:
+                logger.warning(f"Reply failed but {len(successful_books)} orders processed successfully")
+        
+        # エラーがある場合は追加でエラーメッセージを送信
+        if error_messages:
+            # Rate Limit以外のエラーのみ表示
+            non_rate_limit_errors = [err for err in error_messages if "Rate Limit" not in err]
+            if non_rate_limit_errors:
+                error_content = "以下のISBNで問題が発生しました：\n" + '\n'.join([f"・{err}" for err in non_rate_limit_errors[:3]])  # 最大3件まで表示
+                safe_reply(message, error_content)
 
 def safe_discord_login():
     """安全なDiscordログイン"""

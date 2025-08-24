@@ -205,6 +205,27 @@ def fix_common_isbn_errors(isbn_input):
         logger.error(f"ISBN修正処理エラー: {e}")
         return None, None
 
+def normalize_isbn_for_dedup(isbn_raw):
+    """重複検出用のISBN正規化（ISBN13形式に統一）"""
+    try:
+        # まず標準的な方法で処理を試行
+        isbn_digits = re.sub(r'[:\s-]', '', isbn_raw).upper()
+        
+        # 標準的な処理
+        if len(isbn_digits) == 10 and is_isbn10(isbn_digits):
+            return to_isbn13(isbn_digits)
+        elif len(isbn_digits) == 13 and is_isbn13(isbn_digits):
+            return isbn_digits
+        else:
+            # 修正機能を試行
+            fixed_isbn10, fixed_isbn13 = fix_common_isbn_errors(isbn_raw)
+            if fixed_isbn13:
+                return fixed_isbn13
+            
+        return None
+    except:
+        return None
+
 def handle_rate_limit_error(error_message):
     """Rate Limit エラーの処理"""
     global RATE_LIMIT_DETECTED, RATE_LIMIT_START_TIME
@@ -356,12 +377,6 @@ def get_hanmoto_url(isbn):
     """版元ドットコムのURLを生成"""
     return f"https://www.hanmoto.com/bd/isbn/{isbn}"
 
-@client.event
-async def on_ready():
-    """Bot起動時の処理"""
-    logger.info(f'{client.user} has landed!')
-    health_status['bot_connected'] = True
-
 def process_single_isbn(isbn_raw, message_author_id):
     """単一ISBNの処理"""
     try:
@@ -384,26 +399,35 @@ def process_single_isbn(isbn_raw, message_author_id):
                 isbn_10 = fixed_isbn10
                 isbn_13 = fixed_isbn13
             else:
-                return None, f"無効なISBN形式です: {isbn_digits}"
+                return None, None, f"無効なISBN形式です: {isbn_digits}"
+        
+        # 版元ドットコムのURL
+        hanmoto_url = get_hanmoto_url(isbn_13 if isbn_13 else isbn_10)
         
         # OpenBD APIから書籍情報を取得
         title, publisher, price = get_openbd_info(isbn_13 if isbn_13 else isbn_10)
         
-        if title is None:
-            return None, f"ISBN {isbn_13 if isbn_13 else isbn_10} の書籍情報が見つかりませんでした。"
-        
         # 現在の日付を取得
         current_date = datetime.now(timezone(timedelta(hours=9))).strftime('%Y/%m/%d')
-        hanmoto_url = get_hanmoto_url(isbn_13 if isbn_13 else isbn_10)
         
         # スプレッドシートへの情報書き込み
         try:
-            new_row = [str(current_date), str(isbn_10), str(isbn_13), title, str(price), publisher, 2, '注文待ち', str(message_author_id), str(hanmoto_url)]
-            sheet.append_row(new_row)
-            logger.info(f"Google Sheetにデータ追加: {new_row}")
-            
-            # 成功メッセージを返す
-            return title, None
+            if title is None:
+                # 書籍情報が取得できなかった場合
+                new_row = [str(current_date), str(isbn_10), str(isbn_13), "", "", "", 2, '注文待ち', str(message_author_id), str(hanmoto_url)]
+                sheet.append_row(new_row)
+                logger.info(f"Google Sheetにデータ追加（書籍情報なし）: {new_row}")
+                
+                # 書籍情報なしの場合はURLを返す
+                return None, hanmoto_url, None
+            else:
+                # 書籍情報が取得できた場合
+                new_row = [str(current_date), str(isbn_10), str(isbn_13), title, str(price), publisher, 2, '注文待ち', str(message_author_id), str(hanmoto_url)]
+                sheet.append_row(new_row)
+                logger.info(f"Google Sheetにデータ追加: {new_row}")
+                
+                # 書籍情報ありの場合はタイトルのみ返す
+                return title, None, None
             
         except Exception as e:
             error_str = str(e)
@@ -411,9 +435,9 @@ def process_single_isbn(isbn_raw, message_author_id):
             
             # Rate Limitエラーの可能性をチェック
             if handle_rate_limit_error(error_str):
-                return None, "Rate Limit検出のため処理を中断しました"
+                return None, None, "Rate Limit検出のため処理を中断しました"
             
-            return None, f"書籍情報の保存でエラーが発生しました: {error_str}"
+            return None, None, f"書籍情報の保存でエラーが発生しました: {error_str}"
             
     except Exception as e:
         error_str = str(e)
@@ -421,9 +445,15 @@ def process_single_isbn(isbn_raw, message_author_id):
         
         # Rate Limitエラーの可能性をチェック
         if handle_rate_limit_error(error_str):
-            return None, "Rate Limit検出のため処理を中断しました"
+            return None, None, "Rate Limit検出のため処理を中断しました"
         
-        return None, f"書籍情報の処理でエラーが発生しました: {error_str}"
+        return None, None, f"書籍情報の処理でエラーが発生しました: {error_str}"
+
+@client.event
+async def on_ready():
+    """Bot起動時の処理"""
+    logger.info(f'{client.user} has landed!')
+    health_status['bot_connected'] = True
 
 @client.event
 async def on_message(message):
@@ -440,12 +470,30 @@ async def on_message(message):
     if matches:
         logger.info(f"ISBN候補検出（{len(matches)}件）: {matches}")
         
+        # 重複除去処理
+        seen_isbns = set()
+        unique_isbns = []
+        duplicate_count = 0
+        
+        for isbn_raw in matches:
+            normalized = normalize_isbn_for_dedup(isbn_raw)
+            if normalized and normalized not in seen_isbns:
+                seen_isbns.add(normalized)
+                unique_isbns.append(isbn_raw)
+            elif normalized:
+                duplicate_count += 1
+                logger.info(f"重複ISBN検出（スキップ）: {isbn_raw} -> {normalized}")
+        
+        if duplicate_count > 0:
+            logger.info(f"重複除去: {len(matches)}件 -> {len(unique_isbns)}件 ({duplicate_count}件の重複を除去)")
+        
         # 処理結果を保存するリスト
         successful_books = []
+        books_without_info = []
         error_messages = []
         
-        # 各ISBNを個別に処理
-        for isbn_raw in matches:
+        # 各ISBNを個別に処理（重複除去後）
+        for isbn_raw in unique_isbns:
             logger.info(f"処理中: {isbn_raw}")
             
             # Rate Limit状態をチェック
@@ -455,32 +503,48 @@ async def on_message(message):
                 break
             
             # 単一ISBNを処理
-            result_title, error_msg = process_single_isbn(isbn_raw, message.author.id)
+            result_title, result_url, error_msg = process_single_isbn(isbn_raw, message.author.id)
             
             if result_title:
+                # 書籍情報が取得できた場合
                 successful_books.append(result_title)
-                # 複数処理時は少し間隔を空ける
-                if len(matches) > 1:
-                    time.sleep(2)
+            elif result_url:
+                # 書籍情報は取得できなかったがISBNは有効だった場合
+                books_without_info.append(result_url)
             elif error_msg:
                 error_messages.append(error_msg)
                 # エラーがRate Limit関連の場合は処理を中断
                 if "Rate Limit" in error_msg:
                     break
+            
+            # 複数処理時は少し間隔を空ける
+            if len(unique_isbns) > 1:
+                time.sleep(2)
         
         # 結果に応じて返信メッセージを作成
+        reply_parts = []
+        
         if successful_books:
             if len(successful_books) == 1:
-                # 単一書籍の場合
-                reply_content = f"ありがとうございます！\n『{successful_books[0]}』を2冊発注依頼しました！"
+                reply_parts.append(f"ありがとうございます！\n『{successful_books[0]}』を2冊発注依頼しました！")
             else:
-                # 複数書籍の場合
                 book_list = '\n'.join([f"・『{title}』" for title in successful_books])
-                reply_content = f"ありがとうございます！\n以下の書籍を各2冊ずつ発注依頼しました！\n{book_list}"
-            
+                reply_parts.append(f"ありがとうございます！\n以下の書籍を各2冊ずつ発注依頼しました！\n{book_list}")
+        
+        if books_without_info:
+            if len(books_without_info) == 1:
+                reply_parts.append(f"ありがとうございます！\nこちらの書籍を2冊発注依頼しました！（書籍情報を取得できませんでした）\n{books_without_info[0]}")
+            else:
+                url_list = '\n'.join([f"・{url}" for url in books_without_info])
+                reply_parts.append(f"以下の書籍も各2冊ずつ発注依頼しました！（書籍情報を取得できませんでした）\n{url_list}")
+        
+        # 成功した処理があれば返信
+        if reply_parts:
+            reply_content = '\n\n'.join(reply_parts)
             success = safe_reply(message, reply_content)
             if not success:
-                logger.warning(f"Reply failed but {len(successful_books)} orders processed successfully")
+                total_books = len(successful_books) + len(books_without_info)
+                logger.warning(f"Reply failed but {total_books} orders processed successfully")
         
         # エラーがある場合は追加でエラーメッセージを送信
         if error_messages:

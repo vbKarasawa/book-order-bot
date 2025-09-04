@@ -462,7 +462,9 @@ async def on_message(message):
         return
 
     # ISBN検出の正規表現パターン（より柔軟に、複数対応）
-    isbn_pattern = r'(?:ISBN[:\s-]*)?(?:978[:\s-]*|979[:\s-]*)?(\d{1}[:\s-]*\d{3,5}[:\s-]*\d{1,7}[:\s-]*\d{1}[:\s-]*[\dX]|\d{9,13}[\dX]?)'
+    # ISBN13: 978-4-09-290604-4, 978-4-759-40136-7, 979-10-12345-67-8 など
+    # ISBN10: 4-09-290604-4, 0-123-45678-9, 1234567890 など
+    isbn_pattern = r'(?:ISBN[:\s-]*)?(?:979[:\s-]*\d{1,5}[:\s-]*\d{1,7}[:\s-]*\d{1,6}[:\s-]*[\dX]|978[:\s-]*\d{1,5}[:\s-]*\d{1,7}[:\s-]*\d{1,6}[:\s-]*[\dX]|\d{1,5}[:\s-]*\d{1,7}[:\s-]*\d{1,6}[:\s-]*[\dX]|\d{9,13}[\dX]?)'
     
     content = message.content
     matches = re.findall(isbn_pattern, content, re.IGNORECASE)
